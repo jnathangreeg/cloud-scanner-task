@@ -83,6 +83,7 @@ func TestRunExitCodes(t *testing.T) {
 		{"bad format", []string{"--prowler", demoProwler, "--inventory", demoInventory, "--format", "xml"}, exitUsage},
 		{"bad fail-on", []string{"--prowler", demoProwler, "--inventory", demoInventory, "--fail-on", "maybe"}, exitUsage},
 		{"unknown flag", []string{"--nope"}, exitUsage},
+		{"stray argument, e.g. a glob that matched two files", []string{"--prowler", demoProwler, "--inventory", demoInventory, "extra.json"}, exitUsage},
 		{"prowler file not found", []string{"--prowler", "nope.json", "--inventory", demoInventory}, exitError},
 		{"inventory not a directory", []string{"--prowler", demoProwler, "--inventory", demoProwler}, exitError},
 		{"inventory is not Prowler JSON", []string{"--prowler", demoInventory + "/describe-instances.json", "--inventory", demoInventory}, exitError},

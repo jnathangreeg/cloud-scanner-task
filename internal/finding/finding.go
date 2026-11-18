@@ -9,7 +9,8 @@ type Status string
 const (
 	// StatusExposed means every hop of the path was proven open.
 	StatusExposed Status = "EXPOSED"
-	// StatusNotExposed means all data was present and at least one control blocks the path.
+	// StatusNotExposed means a control blocks the path, proven with collected data. Data for
+	// later hops may be missing, because nothing after a blocked hop can reopen the path.
 	StatusNotExposed Status = "NOT_EXPOSED"
 	// StatusUnknown means data or permissions were missing, so no conclusion is possible.
 	StatusUnknown Status = "UNKNOWN"

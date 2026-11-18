@@ -59,7 +59,7 @@ func TestLoadInventoryRecordsMissingFile(t *testing.T) {
 	inv, err := LoadInventory(fsys)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
-		ActionDescribeNetworkAcls: "not collected (describe-network-acls.json not found)",
+		ActionDescribeNetworkAcls: "not collected: describe-network-acls.json not found",
 	}, inv.Missing)
 }
 

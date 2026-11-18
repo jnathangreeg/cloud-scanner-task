@@ -89,6 +89,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		return o, err
 	}
 	switch {
+	case fs.NArg() > 0:
+		return o, fmt.Errorf("unexpected arguments %q (--prowler takes exactly one file)", fs.Args())
 	case o.prowlerFile == "" || o.inventoryDir == "":
 		return o, errors.New("--prowler and --inventory are required")
 	case o.format != "text" && o.format != "json":

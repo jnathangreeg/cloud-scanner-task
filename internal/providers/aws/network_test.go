@@ -68,29 +68,53 @@ func TestSecurityGroupOpenRulesReturnsEveryOpeningRule(t *testing.T) {
 	}
 }
 
-func TestPublicAddress(t *testing.T) {
+func TestInterfaces(t *testing.T) {
 	t.Parallel()
 
-	v4 := types.Instance{PublicIpAddress: awssdk.String("203.0.113.10")}
-	v6 := types.Instance{NetworkInterfaces: []types.InstanceNetworkInterface{
-		{Ipv6Addresses: []types.InstanceIpv6Address{{Ipv6Address: awssdk.String("2001:db8::10")}}},
+	primary := types.Instance{
+		InstanceId: awssdk.String("i-1"), SubnetId: awssdk.String("subnet-a"),
+		PublicIpAddress: awssdk.String("203.0.113.10"),
+		SecurityGroups:  []types.GroupIdentifier{{GroupId: awssdk.String("sg-a")}},
+	}
+	got := interfaces(primary, ipv4)
+	assert.Equal(t, []iface{{ID: "i-1", Address: "203.0.113.10", SubnetID: "subnet-a", GroupIDs: []string{"sg-a"}}}, got)
+	assert.Empty(t, interfaces(primary, ipv6))
+
+	// An Elastic IP on a secondary interface, in its own subnet with its own security group.
+	secondary := primary
+	secondary.PublicIpAddress = nil
+	secondary.NetworkInterfaces = []types.InstanceNetworkInterface{
+		{NetworkInterfaceId: awssdk.String("eni-0"), SubnetId: awssdk.String("subnet-a")},
+		{
+			NetworkInterfaceId: awssdk.String("eni-1"), SubnetId: awssdk.String("subnet-b"),
+			Association: &types.InstanceNetworkInterfaceAssociation{PublicIp: awssdk.String("203.0.113.99")},
+			Groups:      []types.GroupIdentifier{{GroupId: awssdk.String("sg-b")}},
+		},
+	}
+	got = interfaces(secondary, ipv4)
+	assert.Equal(t, []iface{{ID: "eni-1", Address: "203.0.113.99", SubnetID: "subnet-b", GroupIDs: []string{"sg-b"}}}, got)
+
+	// The primary address listed on both the instance and its interface is one path, not two.
+	both := primary
+	both.NetworkInterfaces = []types.InstanceNetworkInterface{{
+		NetworkInterfaceId: awssdk.String("eni-0"),
+		Association:        &types.InstanceNetworkInterfaceAssociation{PublicIp: awssdk.String("203.0.113.10")},
 	}}
-	private := types.Instance{PrivateIpAddress: awssdk.String("10.0.1.5")}
+	got = interfaces(both, ipv4)
+	if assert.Len(t, got, 1) {
+		assert.Equal(t, "eni-0", got[0].ID)
+		assert.Equal(t, "subnet-a", got[0].SubnetID, "falls back to the instance subnet")
+		assert.Equal(t, []string{"sg-a"}, got[0].GroupIDs, "falls back to the instance groups")
+	}
 
-	ip, ok := publicAddress(v4, ipv4)
-	assert.True(t, ok)
-	assert.Equal(t, "203.0.113.10", ip)
-
-	ip, ok = publicAddress(v6, ipv6)
-	assert.True(t, ok)
-	assert.Equal(t, "2001:db8::10", ip)
-
-	_, ok = publicAddress(v6, ipv4)
-	assert.False(t, ok, "an IPv6 address is not a public IPv4")
-	_, ok = publicAddress(private, ipv4)
-	assert.False(t, ok)
-	_, ok = publicAddress(private, ipv6)
-	assert.False(t, ok)
+	v6 := types.Instance{NetworkInterfaces: []types.InstanceNetworkInterface{
+		{NetworkInterfaceId: awssdk.String("eni-6"), Ipv6Addresses: []types.InstanceIpv6Address{{Ipv6Address: awssdk.String("2001:db8::10")}}},
+	}}
+	got = interfaces(v6, ipv6)
+	if assert.Len(t, got, 1) {
+		assert.Equal(t, "2001:db8::10", got[0].Address)
+	}
+	assert.Empty(t, interfaces(v6, ipv4), "an IPv6 address is not a public IPv4")
 }
 
 func routeTable(id, vpc string, main bool, subnets []string, routes ...types.Route) types.RouteTable {
@@ -200,7 +224,7 @@ func TestNACLDecision(t *testing.T) {
 		{"deny 22 before allow all", []types.NetworkAclEntry{deny22, allowAll, denyDefault}, false, 90, ""},
 		{"order is by rule number, not position", []types.NetworkAclEntry{allowAll, denyDefault, deny22}, false, 90, ""},
 		{"narrow deny does not block the rest of the internet", []types.NetworkAclEntry{
-			entry(50, types.RuleActionDeny, "6", "198.51.100.0/24", 22, 22), allowAll}, true, 100, "0.0.0.0/0"},
+			entry(50, types.RuleActionDeny, "6", "198.51.100.0/24", 22, 22), allowAll}, true, 100, "32.0.0.0/3"},
 		{"narrow allow before a deny admits that range", []types.NetworkAclEntry{
 			entry(100, types.RuleActionAllow, "6", "203.0.113.0/24", 22, 22), entry(200, types.RuleActionDeny, "-1", "0.0.0.0/0", -1, -1)}, true, 100, "203.0.113.0/24"},
 		{"split allows cover the internet", []types.NetworkAclEntry{
@@ -214,15 +238,20 @@ func TestNACLDecision(t *testing.T) {
 		{"only the default rule", []types.NetworkAclEntry{denyDefault}, false, defaultNACLRule, ""},
 		{"egress rules do not admit inbound traffic", []types.NetworkAclEntry{egressOf(allowAll)}, false, defaultNACLRule, ""},
 		{"no entries at all", nil, false, defaultNACLRule, ""},
+		{"denies carve the allowed range down", []types.NetworkAclEntry{
+			entry(10, types.RuleActionDeny, "-1", "0.0.0.0/1", -1, -1),
+			entry(20, types.RuleActionDeny, "-1", "128.0.0.0/2", -1, -1),
+			entry(30, types.RuleActionDeny, "-1", "192.0.0.0/3", -1, -1),
+			allowAll}, true, 100, "224.0.0.0/3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			v := naclDecision(types.NetworkAcl{Entries: tt.entries}, 22, ipv4, false)
+			v := naclDecision(types.NetworkAcl{Entries: tt.entries}, 22, ipv4, false, anywherePrefix(ipv4))
 			assert.Equal(t, tt.wantAllowed, v.Allowed)
 			assert.Equal(t, tt.wantRule, v.Rule)
 			if tt.wantAllowed {
-				assert.Equal(t, tt.wantFrom, v.From.String())
+				assert.Equal(t, tt.wantFrom, v.Reach.String())
 			}
 		})
 	}
@@ -234,9 +263,39 @@ func TestNACLDecisionEgress(t *testing.T) {
 	only443 := egressOf(entry(100, types.RuleActionAllow, "6", "0.0.0.0/0", 443, 443))
 	ephemeral := egressOf(entry(100, types.RuleActionAllow, "6", "0.0.0.0/0", 1024, 65535))
 
-	assert.False(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{only443}}, ephemeralPort, ipv4, true).Allowed,
+	assert.False(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{only443}}, ephemeralPort, ipv4, true, anywherePrefix(ipv4)).Allowed,
 		"return traffic to ephemeral ports is denied")
-	assert.True(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{ephemeral}}, ephemeralPort, ipv4, true).Allowed)
+	assert.True(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{ephemeral}}, ephemeralPort, ipv4, true, anywherePrefix(ipv4)).Allowed)
+}
+
+func TestNACLDecisionScope(t *testing.T) {
+	t.Parallel()
+
+	// Inbound admits 198.51.100.0/24, but outbound only answers 203.0.113.0/24: no sender gets a reply.
+	out := egressOf(entry(100, types.RuleActionAllow, "-1", "203.0.113.0/24", -1, -1))
+	scope := netip.MustParsePrefix("198.51.100.0/24")
+	assert.False(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{out}}, ephemeralPort, ipv4, true, scope).Allowed)
+
+	all := egressOf(entry(100, types.RuleActionAllow, "-1", "0.0.0.0/0", -1, -1))
+	v := naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{all}}, ephemeralPort, ipv4, true, scope)
+	assert.True(t, v.Allowed)
+	assert.Equal(t, "198.51.100.0/24", v.Reach.String(), "clipped to the inbound range")
+}
+
+func TestLargestUncovered(t *testing.T) {
+	t.Parallel()
+
+	pfx := netip.MustParsePrefix
+	got, ok := largestUncovered(pfx("0.0.0.0/0"), []netip.Prefix{pfx("0.0.0.0/1"), pfx("128.0.0.0/2")})
+	assert.True(t, ok)
+	assert.Equal(t, "192.0.0.0/2", got.String())
+
+	_, ok = largestUncovered(pfx("10.1.0.0/16"), []netip.Prefix{pfx("10.0.0.0/8")})
+	assert.False(t, ok)
+
+	got, ok = largestUncovered(pfx("203.0.113.0/24"), []netip.Prefix{pfx("10.0.0.0/8")})
+	assert.True(t, ok)
+	assert.Equal(t, "203.0.113.0/24", got.String(), "no overlap: the whole prefix")
 }
 
 func TestNACLDecisionIPv6(t *testing.T) {
@@ -248,11 +307,11 @@ func TestNACLDecisionIPv6(t *testing.T) {
 	}
 	v4Allow := entry(100, types.RuleActionAllow, "-1", "0.0.0.0/0", -1, -1)
 
-	v := naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{v4Allow, v6Allow}}, 22, ipv6, false)
+	v := naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{v4Allow, v6Allow}}, 22, ipv6, false, anywherePrefix(ipv6))
 	assert.True(t, v.Allowed)
 	assert.Equal(t, int32(101), v.Rule)
 
-	assert.False(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{v4Allow}}, 22, ipv6, false).Allowed,
+	assert.False(t, naclDecision(types.NetworkAcl{Entries: []types.NetworkAclEntry{v4Allow}}, 22, ipv6, false, anywherePrefix(ipv6)).Allowed,
 		"an IPv4 rule does not admit IPv6 traffic")
 }
 

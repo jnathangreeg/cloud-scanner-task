@@ -2,6 +2,7 @@ package aws
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -79,8 +80,12 @@ func unknownResult(c finding.Candidate, reason string, missing []string) finding
 		Summary:   "cannot conclude: " + reason + ". Keeping Prowler's severity.",
 		Missing:   missing,
 	}
-	if len(missing) > 0 {
+	denied := slices.ContainsFunc(missing, func(m string) bool { return strings.Contains(m, "AccessDenied") })
+	switch {
+	case denied:
 		r.Remediation = []string{"Grant the scanner role the missing read-only permissions (all are in the AWS managed SecurityAudit policy) and rescan."}
+	case len(missing) > 0:
+		r.Remediation = []string{"Collect the missing data again (the read-only aws ec2 describe-* calls) and rescan."}
 	}
 	return r
 }

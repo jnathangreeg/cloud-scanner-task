@@ -77,7 +77,7 @@ func LoadInventory(fsys fs.FS) (*Inventory, error) {
 			return nil, err
 		}
 		if !found {
-			inv.Missing[s.action] = "not collected (" + s.file + " not found)"
+			inv.Missing[s.action] = "not collected: " + s.file + " not found"
 		}
 	}
 

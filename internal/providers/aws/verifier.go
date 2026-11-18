@@ -69,65 +69,93 @@ func (v *ExposureVerifier) Verify(_ context.Context, c finding.Candidate) findin
 	}
 	in, ok := v.inv.Instances[id]
 	if !ok {
-		return unknownResult(c, fmt.Sprintf("instance %s is not in the inventory snapshot", id), nil)
+		return unknownResult(c, "the instance is not in the inventory snapshot", []string{ActionDescribeInstances + " (" + id + " not in snapshot)"})
 	}
-	if in.State == nil || in.State.Name != types.InstanceStateNameRunning {
+	if in.State == nil {
+		return unknownResult(c, "the instance state is missing", []string{ActionDescribeInstances + " (no State for " + id + ")"})
+	}
+	if in.State.Name != types.InstanceStateNameRunning {
 		return stoppedResult(c, in)
 	}
 	return decide(c, port, v.walk(in, port, ipv4), v.walk(in, port, ipv6))
 }
 
-// walk evaluates hops 2 to 5 for one family. Hop 1 (instance running) is checked by Verify.
-// A hop that blocks with real data is a valid conclusion even if later data is missing.
+// walk evaluates one family. Each interface with a public address is its own path (it has its
+// own subnet and security groups); the most exposed path wins, and unknown beats blocked.
+// Hop 1 (instance running) is checked by Verify.
 func (v *ExposureVerifier) walk(in types.Instance, port int32, f family) walk {
-	w := walk{family: f, steps: []finding.Step{{Control: "instance", Resource: awssdk.ToString(in.InstanceId), Passed: true, Detail: "running"}}}
+	base := walk{family: f, steps: []finding.Step{{Control: "instance", Resource: awssdk.ToString(in.InstanceId), Passed: true, Detail: "running"}}}
 
-	w, done := v.groupHop(w, in, port)
+	nics := interfaces(in, f)
+	if len(nics) == 0 {
+		w, done := v.groupHop(base, groupIDs(in), port)
+		if done {
+			return w
+		}
+		return w.block("public address", awssdk.ToString(in.InstanceId), "no public "+f.String()+" address")
+	}
+	var best walk
+	for i, nic := range nics {
+		w := v.walkInterface(base, in, nic, port)
+		if w.outcome == exposed {
+			return w
+		}
+		if i == 0 || (w.outcome == unknown && best.outcome == blocked) {
+			best = w
+		}
+	}
+	return best
+}
+
+// walkInterface evaluates hops 2 to 5 for one interface. A hop that blocks with real data is a
+// valid conclusion even if later data is missing, because nothing after it can reopen the path.
+func (v *ExposureVerifier) walkInterface(base walk, in types.Instance, nic iface, port int32) walk {
+	w := base
+	w.steps = slices.Clone(base.steps)
+
+	w, done := v.groupHop(w, nic.GroupIDs, port)
 	if done {
 		return w
 	}
-	addr, ok := publicAddress(in, f)
-	if !ok {
-		return w.block("public address", awssdk.ToString(in.InstanceId), "no public "+f.String()+" address")
-	}
-	w.address = addr
-	w.pass("public address", addr, "public "+f.String())
+	w.address = nic.Address
+	w.pass("public address", nic.Address, "public "+w.family.String()+" on "+nic.ID)
 
-	if w, done = v.routeHop(w, in); done {
+	if w, done = v.routeHop(w, nic.SubnetID, awssdk.ToString(in.VpcId)); done {
 		return w
 	}
-	return v.naclHop(w, in, port)
+	return v.naclHop(w, nic.SubnetID, port)
 }
 
-func (v *ExposureVerifier) groupHop(w walk, in types.Instance, port int32) (walk, bool) {
+func (v *ExposureVerifier) groupHop(w walk, ids []string, port int32) (walk, bool) {
 	if reason, ok := v.inv.Missing[ActionDescribeSecurityGroups]; ok {
 		return w.unknown("security group data is missing", []string{ActionDescribeSecurityGroups + " (" + reason + ")"}), true
 	}
-	groups, absent := v.groupsOf(in)
+	groups, absent := v.groupsOf(ids)
 	from := fmt.Sprintf("tcp/%d from %s", port, w.family.anywhere())
 	w.open = sgOpenRules(groups, port, w.family)
 	if len(w.open) == 0 && len(absent) > 0 {
 		// A group we could not see might be the one that opens the port.
-		return w.unknown("security groups missing from the snapshot", []string{ActionDescribeSecurityGroups + " (" + strings.Join(absent, ",") + " not in snapshot)"}), true
+		return w.unknown("security groups are missing from the snapshot", []string{ActionDescribeSecurityGroups + " (" + strings.Join(absent, ",") + " not in snapshot)"}), true
 	}
 	if len(w.open) == 0 {
-		return w.block("security group", strings.Join(groupIDs(in), ","), "no security group allows "+from), true
+		return w.block("security group", strings.Join(ids, ","), "no security group allows "+from), true
 	}
-	ids := make([]string, 0, len(w.open))
+	opened := make([]string, 0, len(w.open))
 	for _, r := range w.open {
-		ids = append(ids, r.GroupID)
+		opened = append(opened, r.GroupID)
 	}
-	w.pass("security group", strings.Join(slices.Compact(ids), ","), "allows "+from)
+	w.pass("security group", strings.Join(slices.Compact(opened), ","), "allows "+from)
 	return w, false
 }
 
-func (v *ExposureVerifier) routeHop(w walk, in types.Instance) (walk, bool) {
+func (v *ExposureVerifier) routeHop(w walk, subnetID, vpcID string) (walk, bool) {
 	if reason, ok := v.inv.Missing[ActionDescribeRouteTables]; ok {
 		return w.unknown("route table data is missing", []string{ActionDescribeRouteTables + " (" + reason + ")"}), true
 	}
-	rt, ok := routeTableFor(v.inv.RouteTables, awssdk.ToString(in.SubnetId), awssdk.ToString(in.VpcId))
+	rt, ok := routeTableFor(v.inv.RouteTables, subnetID, vpcID)
 	if !ok {
-		return w.unknown("no route table found for subnet "+awssdk.ToString(in.SubnetId), nil), true
+		return w.unknown("no route table found for subnet "+subnetID,
+			[]string{ActionDescribeRouteTables + " (no table for " + subnetID + " or the main table of " + vpcID + " in snapshot)"}), true
 	}
 	r, ok := internetRoute(rt, w.family)
 	if !ok {
@@ -141,27 +169,29 @@ func (v *ExposureVerifier) routeHop(w walk, in types.Instance) (walk, bool) {
 	return w, false
 }
 
-func (v *ExposureVerifier) naclHop(w walk, in types.Instance, port int32) walk {
+func (v *ExposureVerifier) naclHop(w walk, subnetID string, port int32) walk {
 	if reason, ok := v.inv.Missing[ActionDescribeNetworkAcls]; ok {
 		return w.unknown("network ACL data is missing", []string{ActionDescribeNetworkAcls + " (" + reason + ")"})
 	}
-	acl, ok := naclFor(v.inv.NetworkACLs, awssdk.ToString(in.SubnetId))
+	acl, ok := naclFor(v.inv.NetworkACLs, subnetID)
 	if !ok {
-		return w.unknown("no network ACL found for subnet "+awssdk.ToString(in.SubnetId), nil)
+		return w.unknown("no network ACL found for subnet "+subnetID,
+			[]string{ActionDescribeNetworkAcls + " (no ACL for " + subnetID + " in snapshot)"})
 	}
 	aclID := awssdk.ToString(acl.NetworkAclId)
-	inbound := naclDecision(acl, port, w.family, false)
+	inbound := naclDecision(acl, port, w.family, false, anywherePrefix(w.family))
 	if !inbound.Allowed {
 		return w.block("network ACL", aclID, fmt.Sprintf("inbound %s denies tcp/%d from the internet", ruleName(inbound.Rule), port))
 	}
-	outbound := naclDecision(acl, ephemeralPort, w.family, true)
+	// The reply must reach the same senders that inbound admits.
+	outbound := naclDecision(acl, ephemeralPort, w.family, true, inbound.Reach)
 	if !outbound.Allowed {
-		return w.block("network ACL", aclID, fmt.Sprintf("outbound %s denies the return traffic (tcp/%d to the internet)", ruleName(outbound.Rule), ephemeralPort))
+		return w.block("network ACL", aclID, fmt.Sprintf("outbound %s denies the return traffic (tcp/%d to %s)", ruleName(outbound.Rule), ephemeralPort, inbound.Reach))
 	}
 	w.pass("network ACL", aclID, fmt.Sprintf("inbound %s allows tcp/%d from %s; outbound %s allows the return traffic",
 		ruleName(inbound.Rule), port, inbound.From, ruleName(outbound.Rule)))
-	w.outcome, w.from = exposed, inbound.From.String()
-	w.broad = inbound.From.Bits() <= map[family]int{ipv4: 8, ipv6: 32}[w.family]
+	w.outcome, w.from = exposed, outbound.Reach.String()
+	w.broad = outbound.Reach.Bits() <= map[family]int{ipv4: 8, ipv6: 32}[w.family]
 	return w
 }
 
@@ -172,11 +202,11 @@ func ruleName(rule int32) string {
 	return fmt.Sprintf("rule %d", rule)
 }
 
-// groupsOf resolves the instance's security groups and lists the IDs absent from the snapshot.
-func (v *ExposureVerifier) groupsOf(in types.Instance) ([]types.SecurityGroup, []string) {
+// groupsOf resolves security group IDs and lists the ones absent from the snapshot.
+func (v *ExposureVerifier) groupsOf(ids []string) ([]types.SecurityGroup, []string) {
 	var groups []types.SecurityGroup
 	var absent []string
-	for _, id := range groupIDs(in) {
+	for _, id := range ids {
 		if g, ok := v.inv.SecurityGroups[id]; ok {
 			groups = append(groups, g)
 		} else {
@@ -184,14 +214,6 @@ func (v *ExposureVerifier) groupsOf(in types.Instance) ([]types.SecurityGroup, [
 		}
 	}
 	return groups, absent
-}
-
-func groupIDs(in types.Instance) []string {
-	ids := make([]string, 0, len(in.SecurityGroups))
-	for _, g := range in.SecurityGroups {
-		ids = append(ids, awssdk.ToString(g.GroupId))
-	}
-	return ids
 }
 
 func (w *walk) pass(control, resource, detail string) {

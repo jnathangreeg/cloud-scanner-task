@@ -184,7 +184,18 @@ func TestVerifyUnknownWhenDataMissing(t *testing.T) {
 		{"security groups not collected", "i-web", func(inv *Inventory) {
 			inv.Missing[ActionDescribeSecurityGroups] = "AccessDenied"
 		}, "ec2:DescribeSecurityGroups (AccessDenied)"},
-		{"instance not in snapshot", "i-missing", func(*Inventory) {}, ""},
+		{"instance not in snapshot", "i-missing", func(*Inventory) {}, "ec2:DescribeInstances (i-missing not in snapshot)"},
+		{"instance state missing", "i-web", func(inv *Inventory) {
+			web := inv.Instances["i-web"]
+			web.State = nil
+			inv.Instances["i-web"] = web
+		}, "ec2:DescribeInstances (no State for i-web)"},
+		{"no route table for the subnet", "i-web", func(inv *Inventory) {
+			inv.RouteTables = nil
+		}, "ec2:DescribeRouteTables (no table for subnet-pub or the main table of vpc-a in snapshot)"},
+		{"no network ACL for the subnet", "i-web", func(inv *Inventory) {
+			inv.NetworkACLs = nil
+		}, "ec2:DescribeNetworkAcls (no ACL for subnet-pub in snapshot)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -305,4 +316,48 @@ func TestVerifyAllTrafficRuleGetsMatchingRevoke(t *testing.T) {
 
 	r := verify(t, inv, "i-web")
 	assert.Contains(t, r.Remediation[0], "--ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]'")
+}
+
+func TestVerifyElasticIPOnSecondaryInterface(t *testing.T) {
+	t.Parallel()
+
+	inv := testInventory()
+	worker := inv.Instances["i-private"]
+	worker.NetworkInterfaces = []types.InstanceNetworkInterface{
+		{NetworkInterfaceId: awssdk.String("eni-0"), SubnetId: awssdk.String("subnet-priv")},
+		{
+			NetworkInterfaceId: awssdk.String("eni-1"), SubnetId: awssdk.String("subnet-pub"),
+			Association: &types.InstanceNetworkInterfaceAssociation{PublicIp: awssdk.String("203.0.113.77")},
+		},
+	}
+	inv.Instances["i-private"] = worker
+
+	r := verify(t, inv, "i-private")
+	assert.Equal(t, finding.StatusExposed, r.Status, "the EIP on eth1 is in a public subnet")
+	assert.Contains(t, r.Summary, "203.0.113.77")
+}
+
+func TestVerifyReplyMustReachTheSameSenders(t *testing.T) {
+	t.Parallel()
+
+	inv := testInventory()
+	inv.NetworkACLs[0].Entries = []types.NetworkAclEntry{
+		entry(100, types.RuleActionAllow, "6", "198.51.100.0/24", 22, 22),
+		egressOf(entry(100, types.RuleActionAllow, "-1", "203.0.113.0/24", -1, -1)),
+	}
+
+	r := verify(t, inv, "i-web")
+	assert.Equal(t, finding.StatusNotExposed, r.Status)
+	assert.Contains(t, r.Summary, "denies the return traffic (tcp/49152 to 198.51.100.0/24)")
+}
+
+func TestVerifyNotCollectedAsksToCollectAgain(t *testing.T) {
+	t.Parallel()
+
+	inv := testInventory()
+	inv.Missing[ActionDescribeNetworkAcls] = "not collected: describe-network-acls.json not found"
+
+	r := verify(t, inv, "i-web")
+	assert.Equal(t, finding.StatusUnknown, r.Status)
+	assert.Contains(t, r.Remediation[0], "Collect the missing data again")
 }
