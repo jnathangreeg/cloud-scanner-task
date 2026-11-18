@@ -2,121 +2,22 @@
 
 [![ci](https://github.com/jnathangreeg/cloud-scanner-task/actions/workflows/ci.yml/badge.svg)](https://github.com/jnathangreeg/cloud-scanner-task/actions/workflows/ci.yml)
 
-A small proof of concept for the Aikido Cloud Security Case. It takes Prowler's
-"port open to the internet" findings and **proves** whether the instance can really be
-reached from the internet. Every verdict comes with the evidence path and a fix.
+A small proof of concept for the Aikido Cloud Security Case.
 
-Prowler flags an EC2 instance when one of its security groups allows SSH from `0.0.0.0/0`.
-That is a configuration fact, not exposure. To reach the instance, a packet also needs a
-public address, a route to an internet gateway, and a network ACL that lets it in. This
-tool walks that path for every Prowler candidate and answers:
+Prowler flags an EC2 instance when a security group allows SSH from `0.0.0.0/0`. That is a
+configuration fact, not exposure: a packet also needs a public address, a route to an internet
+gateway and a network ACL that lets it in. This tool takes Prowler's findings, walks that path,
+and **proves** the answer with evidence and a fix:
 
 | Verdict | Meaning |
 |---|---|
-| `EXPOSED` | Every hop is open. The evidence lists each one. |
-| `NOT_EXPOSED` | A control blocks the path, proven with collected data. The result names the control, e.g. "network ACL rule 90". |
-| `UNKNOWN` | Data or permissions needed to decide are missing. The result names what is missing and fails the run by default. |
+| `EXPOSED` | Every hop is open. Each hop is listed as evidence. |
+| `NOT_EXPOSED` | A control blocks the path, proven with collected data, e.g. "network ACL rule 90". |
+| `UNKNOWN` | Data or permissions are missing. It names what is missing and is never treated as a pass. |
 
-## 1. Three proposed checks
+## Quick start
 
-| # | Check | Customer risk | Why this priority |
-|---|---|---|---|
-| 1 | **Verified internet exposure of admin and data ports** (implemented) | Direct remote access to SSH, RDP or a database port. | It's the most common entry point, and it is what a new pre-auth RCE turns into a breach overnight (see Aikido's posts on the [Apache HTTP/2](https://www.aikido.dev/blog/cve-2026-119618-apache-http-server-rce) and [Linux TCP](https://www.aikido.dev/blog/linux-kernel-tcp-rce-vulnerability-cve-2026-98432) RCEs). Today's checks are noisy here: they flag security groups, not reachability. Proving the path removes false positives, in the same spirit as "[only proven findings make the report](https://www.aikido.dev/blog/aikido-launches-external-network-pentesting)". |
-| 2 | **Exposed workload with IMDSv1 and a powerful IAM role** | One SSRF bug on a public instance leaks its role credentials. If the role is admin, or can escalate (`iam:PassRole` + `ec2:RunInstances`, `iam:Attach*Policy`...), the attacker owns the account. | This is the network × identity interaction. It reuses check 1's path, so it is the natural next step. |
-| 3 | **Risky role trust** | Roles that outsiders can assume with no network path at all: `Principal: *`, third-party trust without `sts:ExternalId`, GitHub OIDC trust with no or a wildcard `sub` condition. | The [wfx-loot campaign](https://www.aikido.dev/blog/compromised-github-accounts-push-ci-secret-stealer-to-tens-of-thousands-of-repositories) swapped stolen GitHub OIDC tokens for cloud sessions and rewrote trust policies to `"Principal": {"AWS": "*"}`. That persists after every secret is rotated, so only a posture check finds it. |
-
-## 2. Chosen check and approach
-
-**Check 1**, starting with the Prowler checks `ec2_instance_port_ssh_exposed_to_internet` (22) and
-`ec2_instance_port_rdp_exposed_to_internet` (3389). Prowler has the same check for 15+ other
-ports, and each one is a single line in the verifier's port map.
-
-### Why build on Prowler
-
-Prowler already finds the candidates across many ports and across AWS, Azure and GCP. This tool
-does not compete with it; it removes its false positives. Reading Prowler 5.50.0's source shows
-three gaps in these checks:
-
-- An instance with **no public IP** is still a `FAIL` (severity medium):
-  [`ec2/lib/instance.py`](https://github.com/prowler-cloud/prowler/blob/5.50.0/prowler/providers/aws/services/ec2/lib/instance.py#L18-L19).
-- **Network ACLs are not considered**, so a subnet whose ACL denies port 22 is still `critical`.
-- When a subnet has no explicit route table, the fallback queries `association.main=true` for the
-  **whole region, not the subnet's VPC**:
-  [`vpc/vpc_service.py`](https://github.com/prowler-cloud/prowler/blob/5.50.0/prowler/providers/aws/services/vpc/vpc_service.py#L365).
-  Another VPC's main table can then mark the subnet public.
-
-The input is Prowler's **JSON-OCSF** output, not its CSV. OCSF is an open, versioned schema that
-keeps nested data as real fields, and it looks the same for every cloud. CSV is read by column
-name, so a renamed column breaks parsing silently.
-
-### Data sources, APIs and permissions
-
-| Data | Read-only API | Permission |
-|---|---|---|
-| Candidates | `prowler aws --checks <ids> -M json-ocsf` | the Prowler role |
-| Instances: state, public IPv4, IPv6, subnet, VPC, security groups | `DescribeInstances` | `ec2:DescribeInstances` |
-| Security group ingress rules | `DescribeSecurityGroups` | `ec2:DescribeSecurityGroups` |
-| Route tables and their associations | `DescribeRouteTables` | `ec2:DescribeRouteTables` |
-| Network ACL entries and their associations | `DescribeNetworkAcls` | `ec2:DescribeNetworkAcls` |
-
-All four are in the AWS managed `SecurityAudit` policy. The fixtures in `examples/` are exactly
-what `aws ec2 describe-* --output json` prints. They load straight into the AWS SDK for Go types,
-so a live read-only collector produces the same data.
-
-### The verification walk
-
-```mermaid
-flowchart TD
-    C["Prowler candidate<br/>instance + port"] --> R{"1 · instance found<br/>and running?"}
-    R -- "not in data" --> U["UNKNOWN<br/>+ missing permission"]
-    R -- stopped --> N["NOT_EXPOSED<br/>+ blocking control"]
-    R -- yes --> S{"2 · security group allows the port<br/>from 0.0.0.0/0 or ::/0?"}
-    S -- no --> N
-    S -- yes --> A{"3 · public IPv4<br/>or IPv6 address?"}
-    A -- no --> N
-    A -- yes --> T{"4 · route 0.0.0.0/0 or ::/0 to an igw-?<br/>explicit table, else main table of the same VPC"}
-    T -- no --> N
-    T -- yes --> L{"5 · network ACL, rules in number order:<br/>lets the port in and the reply out?"}
-    L -- no --> N
-    L -- yes --> E["EXPOSED<br/>critical, every hop as evidence"]
-```
-
-Each hop is checked per address family (IPv4 and IPv6). The instance is exposed if either family
-passes every hop. Missing data at a hop gives `UNKNOWN`, never `NOT_EXPOSED`. A hop that already
-blocks with real data still gives `NOT_EXPOSED`, because nothing after it can reopen the path.
-
-### Architecture
-
-```mermaid
-flowchart LR
-    P["Prowler<br/>JSON-OCSF"] --> PR["prowler<br/>reader"]
-    PR -- candidates --> V["verify<br/>registry"]
-    I["AWS describe-* JSON"] --> AWS["providers/aws<br/>verifier"]
-    V -- "check ID → verifier" --> AWS
-    V -. "no verifier" .-> UV["UNVERIFIED<br/>(Prowler verdict kept)"]
-    AWS --> RP["report<br/>text / JSON"]
-    UV --> RP
-```
-
-Only `internal/providers/aws` knows about AWS. Supporting another cloud means adding a verifier
-under `internal/providers/` for that cloud's Prowler checks. The reader, registry and report
-stay unchanged.
-
-```
-cmd/scanner/            entry point: flags, exit codes
-internal/
-  finding/              shared types: Candidate, Result, Status
-  prowler/              IN    read Prowler JSON-OCSF (any cloud)
-  verify/               CORE  Verifier interface and registry
-  providers/aws/        AWS   inventory and the five-hop walk
-  report/               OUT   text and JSON
-examples/               demo account snapshots
-```
-
-## 3. Run it
-
-Only Go is needed (no AWS account, no Python, no Docker). It runs on Linux, macOS and Windows, and
-CI tests all three.
+Only Go is needed. No AWS account, Python or Docker. CI runs on Linux, macOS and Windows.
 
 ```bash
 git clone https://github.com/jnathangreeg/cloud-scanner-task && cd cloud-scanner-task
@@ -124,37 +25,97 @@ go run ./cmd/scanner --prowler examples/demo-account/prowler.ocsf.json --invento
 go test ./...
 ```
 
-With `make`: `make run-demo` (the same run with `--fail-on never`, so it exits 0), `make test` (with
-the race detector, which needs cgo), `make lint` and `make cover`.
+## 1. Three proposed checks
 
-| Flag | Meaning |
+| # | Check | Customer risk | Why this priority |
+|---|---|---|---|
+| 1 | **Verified internet exposure of admin ports** (built) | Remote access to SSH, RDP or a database. | The most common way in, and the first question when a pre-auth RCE drops ([Apache HTTP/2](https://www.aikido.dev/blog/cve-2026-119618-apache-http-server-rce), [Linux TCP](https://www.aikido.dev/blog/linux-kernel-tcp-rce-vulnerability-cve-2026-98432)). Today's checks flag security groups, not reachability, so proving the path removes noise. Same idea as "[only proven findings make the report](https://www.aikido.dev/blog/aikido-launches-external-network-pentesting)". |
+| 2 | **Exposed instance with IMDSv1 and a powerful role** | One SSRF on a public instance leaks role credentials; an admin or escalating role means account takeover. | Network × identity. It reuses check 1's path. |
+| 3 | **Risky role trust** | Outsiders assume roles with no network path: `Principal: *`, no `sts:ExternalId`, GitHub OIDC without a fixed `sub`. | The [wfx-loot campaign](https://www.aikido.dev/blog/compromised-github-accounts-push-ci-secret-stealer-to-tens-of-thousands-of-repositories) rewrote trust policies to `"Principal": {"AWS": "*"}`, which survives secret rotation. |
+
+## 2. Approach
+
+**Why build on Prowler.** Prowler already finds the candidates for 15+ ports on AWS, Azure and
+GCP. This tool removes its false positives instead of replacing it. Prowler 5.50.0's own code shows
+three gaps in these checks:
+
+- An instance with **no public IP** still fails, at medium ([`instance.py`](https://github.com/prowler-cloud/prowler/blob/5.50.0/prowler/providers/aws/services/ec2/lib/instance.py#L18-L19)).
+- **Network ACLs are ignored**, so a subnet that denies port 22 still shows `critical`.
+- A subnet without its own route table falls back to the main table of **any VPC in the region**,
+  not its own ([`vpc_service.py`](https://github.com/prowler-cloud/prowler/blob/5.50.0/prowler/providers/aws/services/vpc/vpc_service.py#L365)).
+
+**Input.** Prowler's JSON-OCSF output (the same open format for every cloud), plus four read-only
+EC2 calls. The fixtures in `examples/` are exactly what `aws ec2 describe-* --output json` prints,
+and they load straight into the AWS SDK for Go types.
+
+| Data | Read-only API (all in `SecurityAudit`) |
 |---|---|
-| `--prowler` | Prowler JSON-OCSF findings file |
-| `--inventory` | directory with the `aws ec2 describe-*` JSON files |
-| `--format` | `text` (default) or `json` |
-| `--fail-on` | exit 1 on `unknown` (EXPOSED or UNKNOWN, the default), `exposed` (EXPOSED only), or `never` |
+| Candidates | `prowler aws --checks <ids> -M json-ocsf` |
+| Instances: state, addresses, interfaces, security groups | `ec2:DescribeInstances` |
+| Security group rules | `ec2:DescribeSecurityGroups` |
+| Route tables | `ec2:DescribeRouteTables` |
+| Network ACLs | `ec2:DescribeNetworkAcls` |
 
-Exit codes: `0` nothing at the threshold, `1` findings at the threshold, `2` usage error, `3` input
-error or interrupted run. By default an `UNKNOWN` fails the run, because missing data is never a pass.
+**The walk.** Run per address family (IPv4, IPv6) and per network interface with a public address:
 
-### The demo account
+```mermaid
+flowchart TD
+    C["Prowler candidate<br/>instance + port"] --> R{"1 · instance running?"}
+    R -- "data missing" --> U["UNKNOWN<br/>+ what is missing"]
+    R -- stopped --> N["NOT_EXPOSED<br/>+ blocking control"]
+    R -- yes --> S{"2 · security group allows the port<br/>from 0.0.0.0/0 or ::/0?"}
+    S -- no --> N
+    S -- yes --> A{"3 · public IPv4 or IPv6 address?"}
+    A -- no --> N
+    A -- yes --> T{"4 · route to an internet gateway?<br/>own table, else the main table of the same VPC"}
+    T -- no --> N
+    T -- yes --> L{"5 · network ACL lets the port in<br/>and the reply out?"}
+    L -- no --> N
+    L -- yes --> E["EXPOSED<br/>every hop as evidence"]
+```
 
-`examples/demo-account` is one AWS account with five instances. All five have a security group that
-opens SSH to the internet, and Prowler fails all five. Only the path behind the security group differs.
+A hop that blocks with real data is a valid `NOT_EXPOSED` even if later data is missing, because
+nothing after it can reopen the path. Missing data before that point is always `UNKNOWN`.
+
+**Architecture.** Only `internal/providers/aws` knows about AWS. Another cloud is one more folder
+under `internal/providers/`; the reader, registry and report stay the same.
+
+```mermaid
+flowchart LR
+    P["Prowler JSON-OCSF"] --> PR["prowler reader"]
+    PR -- candidates --> V["verify registry"]
+    V -- "check ID → verifier" --> AWS["providers/aws"]
+    I["describe-* JSON"] --> AWS
+    V -. "no verifier" .-> UV["UNVERIFIED<br/>Prowler verdict kept"]
+    AWS --> RP["report: text / JSON"]
+    UV --> RP
+```
+
+```
+cmd/scanner/        CLI: flags and exit codes
+internal/finding/   shared types
+internal/prowler/   IN    read Prowler JSON-OCSF
+internal/verify/    CORE  Verifier interface and registry
+internal/providers/aws/   inventory and the five-hop walk
+internal/report/    OUT   text and JSON
+examples/           demo snapshots
+```
+
+## 3. Results
+
+`examples/demo-account` has five instances with the same "SSH open to the world" security group.
+Prowler fails all five. Only the path behind the security group differs:
 
 | Instance | Setup | Prowler | This tool |
 |---|---|---|---|
-| `i-0web` | public IP, public subnet, network ACL allows all | critical | **EXPOSED** |
-| `i-0nacl` | same as `i-0web`, but its subnet's ACL rule 90 denies port 22 | critical | **NOT_EXPOSED** (ACL rule 90) |
-| `i-0private` | no public IP, NAT route only | medium | **NOT_EXPOSED** (no public address) |
-| `i-0othervpc` | public IP; subnet has no route table association, and its VPC's main table has no internet route (another VPC's main table does) | critical | **NOT_EXPOSED** (no internet route) |
-| `i-0v6` | no public IPv4, but an IPv6 address, `::/0` in the security group and a `::/0` route to the internet gateway | medium | **EXPOSED** over IPv6 |
+| `i-0web` | public IP, public subnet | critical | **EXPOSED** |
+| `i-0nacl` | same as `i-0web`, but ACL rule 90 denies port 22 | critical | **NOT_EXPOSED** |
+| `i-0private` | no public IP | medium | **NOT_EXPOSED** |
+| `i-0othervpc` | no route table of its own; its VPC's main table has no internet route | critical | **NOT_EXPOSED** |
+| `i-0v6` | no public IPv4, but IPv6 with `::/0` open and routed | medium | **EXPOSED** (IPv6) |
 
-The demo also has a failed Prowler check with no verifier (`ec2_instance_profile_attached`). It is
-kept as `UNVERIFIED` with Prowler's own severity, so nothing is silently dropped.
-
-**Finding and look-alike.** `i-0web` and `i-0nacl` have the same security group, the same kind of
-public IP and the same route table. Only the network ACL differs:
+**The finding and its look-alike.** Same security group, same kind of public IP, same route
+table. Only the network ACL differs:
 
 ```
 [EXPOSED] critical  arn:aws:ec2:eu-west-1:123456789012:instance/i-0web
@@ -177,20 +138,14 @@ public IP and the same route table. Only the network ACL differs:
     ✔ public address  203.0.113.20  public IPv4 on i-0nacl
     ✔ route table     rtb-0pub      0.0.0.0/0 → igw-0a
     ✘ network ACL     acl-0locked   inbound rule 90 denies tcp/22 from the internet
-  fix:
-    - Defense in depth: sg-0ssh still allows tcp/22 from 0.0.0.0/0, so one change to an address, route or network ACL would expose it: aws ec2 revoke-security-group-ingress --group-id sg-0ssh --ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0}]'
-    - Defense in depth: sg-0ssh still allows tcp/22 from ::/0, so one change to an address, route or network ACL would expose it: aws ec2 revoke-security-group-ingress --group-id sg-0ssh --ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,Ipv6Ranges=[{CidrIpv6=::/0}]'
 ```
 
-`NOT_EXPOSED` still suggests a fix. The security group is a latent risk, but it is no longer a
-critical alert. Severity follows what is really reachable: `critical` when the reachable range is
-broad (`/8` or wider for IPv4, `/32` for IPv6, the thresholds S3 uses for "public"), `high` when a
-network ACL narrows it to a smaller range such as one office `/24`.
+`NOT_EXPOSED` still lists a "defense in depth" fix for the open security group (left out above).
+Severity follows what is really reachable: `critical` for a broad range (`/8` or wider), `high`
+when an ACL narrows it to something like one office `/24`.
 
-### Missing permissions
-
-`examples/missing-permission` is the same `i-0web`, but the scanner role was denied
-`ec2:DescribeNetworkAcls` (recorded in `errors.json`):
+**Missing permission.** `examples/missing-permission` is the same `i-0web` with
+`ec2:DescribeNetworkAcls` denied:
 
 ```
 [UNKNOWN] critical  arn:aws:ec2:eu-west-1:123456789012:instance/i-0web
@@ -202,9 +157,19 @@ network ACL narrows it to a smaller range such as one office `/24`.
     - ec2:DescribeNetworkAcls (AccessDenied)
 ```
 
-### Running it on a real account
+### Usage
 
-All calls are read-only. With a profile that has `SecurityAudit`:
+| Flag | Meaning |
+|---|---|
+| `--prowler` | Prowler JSON-OCSF file |
+| `--inventory` | folder with the `describe-*.json` files (and an optional `errors.json` of failed calls) |
+| `--format` | `text` (default) or `json` |
+| `--fail-on` | exit 1 on `unknown` (EXPOSED or UNKNOWN, the default), `exposed`, or `never` |
+
+Exit codes: `0` clean, `1` findings, `2` usage error, `3` input error or interrupted run.
+`make test` (race detector), `make lint` and `make cover` are also available.
+
+**On a real account** (read-only, a profile with `SecurityAudit`):
 
 ```bash
 prowler aws --region eu-west-1 -M json-ocsf \
@@ -216,84 +181,64 @@ done
 go run ./cmd/scanner --prowler "$(ls -t output/*.ocsf.json | head -1)" --inventory snapshot
 ```
 
-If a `describe-*` call is denied, leave its file out or record it in `snapshot/errors.json`. The
-affected checks then report `UNKNOWN`, name the missing action and say whether to grant a
-permission (AccessDenied) or just collect again.
+## 4. Limits and assumptions
 
-## 4. Limits
+What can change the verdict:
 
-The verdict covers the direct internet path to the instance's own address. Things that can change it:
+- **Other ways in:** an internet-facing load balancer, Global Accelerator or CloudFront in front of the instance.
+- **Controls outside the VPC config:** host firewalls, AWS Network Firewall, and whether anything listens on the port.
+- **Non-internet exposure:** VPC peering, Transit Gateway, VPN.
+- **Time:** the verdict describes one snapshot.
 
-- **Other ways in:** an internet-facing load balancer, NAT port forwarding, Global Accelerator or
-  CloudFront in front of a private instance. These need the ELBv2 and target-group data.
-- **Security group sources:** like Prowler, only rules from `0.0.0.0/0` or `::/0` count. Managed
-  prefix lists, references to other security groups and narrower CIDRs are not treated as the internet.
-  Network ACLs are evaluated with real address-range math, so narrow and split ACL rules are handled.
-- **Return traffic:** network ACLs are stateless, so the outbound rules must allow the reply. This
-  is checked with one representative ephemeral port (49152, inside every common OS range).
-- **Controls outside the VPC configuration:** a host firewall, AWS Network Firewall or a Gateway
-  Load Balancer appliance in the route path, and whether anything listens on the port.
-- **Non-internet exposure:** VPC peering, Transit Gateway, VPN and Direct Connect.
-- **Time:** the verdict describes one snapshot. A security group or route can change minutes later.
+Assumptions:
 
-**Missing data or permissions** never produce a pass. The result is `UNKNOWN`, keeps Prowler's
-severity, names the missing API action (or the missing piece, such as a subnet with no network
-ACL in the snapshot), and fails the run by default. A hop that blocks with real data still gives a valid
-`NOT_EXPOSED`, even when later data is missing, because nothing after a blocked hop can open the path.
+- Like Prowler, a security group counts only for rules from `0.0.0.0/0` or `::/0`. Prefix lists and
+  references to other security groups are not the internet.
+- Network ACLs are evaluated with real address-range math, including the stateless reply, checked
+  on one representative ephemeral port (49152).
+
+**Missing data or permissions** give `UNKNOWN`, keep Prowler's severity, name what is missing,
+and fail the run by default. They never count as a pass.
 
 ## 5. Production scale: 3,000 environments
 
 ```mermaid
 flowchart TD
     UI["UI / API: scan now"] --> Q
-    S["Scheduler (single leader)<br/>user schedule per account<br/>+ change events"] --> Q
-    Q[["Pulsar topic: scan-requests<br/>one message per account × region<br/>Key_Shared on account · retries · DLQ"]] --> W
-    W["Stateless workers (scale on backlog)<br/>1 assume read-only role + ExternalId<br/>2 Prowler, only the needed checks<br/>3 four ec2:Describe* calls<br/>4 verify"] <-->|STS| A["Customer account<br/>read-only role from a<br/>CloudFormation stack"]
-    W --> F[["Pulsar topic: findings"]]
-    F --> D[("Postgres<br/>fingerprint · first_seen · last_seen<br/>status · accepted risk")]
+    S["Scheduler<br/>user schedule per account<br/>+ change events"] --> Q
+    Q[["Pulsar: scan-requests<br/>one message per account × region<br/>retries · dead-letter topic"]] --> W
+    W["Stateless workers<br/>assume read-only role + ExternalId<br/>Prowler + 4 describe calls → verify"] <-->|STS| A["Customer account<br/>read-only role"]
+    W --> F[["Pulsar: findings"]]
+    F --> D[("Postgres<br/>fingerprint · first_seen · last_seen")]
     D --> UI2["Dashboard and alerts"]
 ```
 
-- **Fan-out:** one message per account and region, on a queue with retries and a dead-letter
-  topic. One broken account cannot block the other 2,999. Keying on the account means two workers
-  never scan the same account at once, and workers scale on backlog.
-- **Access:** customers deploy a read-only role (CloudFormation or StackSets for a whole
-  organization) that trusts the scanner with an `sts:ExternalId`. Workers use short-lived
-  credentials per scan, and no keys are stored.
-- **Rate limits:** AWS throttles per account and region, so each worker limits its own calls, uses
-  the SDK's retry with backoff, and runs only the Prowler checks that have consumers.
-- **Findings store:** a finding's identity is a fingerprint of provider, check and resource. Each
-  scan upserts `last_seen`. A finding is auto-resolved only after a **complete** scan of that
-  account, so a partial scan or an `AccessDenied` never "fixes" findings.
-- **Stuck scans:** a running scan holds a lease with a heartbeat, so a crashed worker frees the
-  account quickly and the scheduler can skip accounts that are still scanning.
-- **Observability:** scan lag, the AccessDenied rate per permission, the verdict mix per check, DLQ size.
+- **Fan-out:** one message per account and region. Retries and a dead-letter topic mean one broken
+  account cannot block the other 2,999, and workers scale on the queue backlog.
+- **Access:** a read-only role per customer (CloudFormation, or StackSets for a whole organization)
+  trusted with an `sts:ExternalId`. Short-lived credentials per scan, no stored keys.
+- **Rate limits:** AWS throttles per account and region, so workers cap their own calls, retry
+  with backoff, and run only the Prowler checks that are needed.
+- **Findings store:** a finding's fingerprint (provider, check, resource) tracks first and last
+  seen. Findings auto-resolve only after a **complete** scan, so an `AccessDenied` never "fixes" anything.
+- **Reliability:** a running scan holds a lease with a heartbeat, so a crashed worker frees the account fast.
 
-**Before production:**
-
-1. A correctness corpus of real VPC topologies, compared against AWS Reachability Analyzer.
-2. Reporting of permission gaps to customers.
-3. Tenant isolation: fail closed if the account ID in the data is not the expected one.
-4. Fuzz tests for the security group and ACL matchers.
+Before production: test the verdicts against AWS Reachability Analyzer on real VPC topologies,
+show permission gaps to customers, and fail closed if the data belongs to a different account
+than expected.
 
 ## Next steps
 
-1. **Design review with the team.** Write a short design record for the verdict model (EXPOSED,
-   NOT_EXPOSED, UNKNOWN and what "evidence" must contain). Present it, debate the trade-offs (how
-   much noise to accept versus the risk of missing a real exposure), then agree and build.
-2. **Customer onboarding.** A CloudFormation or Terraform template for the read-only role with an
-   ExternalId, StackSets for organizations, and versioned permission sets so a new check that needs
-   a new permission is detected and the customer is told.
-3. **Continuous scanning.** "Scan now", a schedule per account set by the user, and rescans
-   triggered by change events (EventBridge or AWS Config on security group, ACL and route changes),
-   so a new exposure is found in minutes.
-4. **Risk acceptance and false positives.** Let a user mark a finding as accepted risk or false
-   positive with a reason, an owner, a scope and an expiry date. The finding stays visible as
-   accepted, reopens when the date passes, and every change is audit-logged.
-5. **Input at scale.** Stream-decode large OCSF files instead of loading them whole, pin the OCSF
-   schema version, and accept findings from other OCSF producers such as Security Hub.
-6. **Checks 2 and 3**, starting from this check's path result.
-7. **A live read-only collector** with the AWS SDK for Go, producing the same types as the fixtures.
-8. **More paths:** load balancers, prefix lists, per-interface security groups for every Prowler
-   port check, and ACL return traffic for unusual ephemeral port ranges.
-9. **Azure:** a verifier for Prowler's network security group checks, under `internal/providers/azure`.
+In priority order:
+
+1. **Design review with the team.** Write a design record for the scale design above and the
+   verdict model, present it, and debate the trade-offs (noise versus the risk of missing a real
+   exposure) before building.
+2. **Production path.** The customer onboarding role, a live read-only collector with the AWS SDK
+   for Go, and continuous scanning: "scan now", a schedule per account, and rescans when a security
+   group, ACL or route changes.
+3. **Risk acceptance.** Mark a finding as accepted or a false positive, with a reason, owner and
+   expiry date. It stays visible and reopens when the date passes.
+4. **More paths:** load balancers, prefix lists and the other Prowler port checks.
+5. **Checks 2 and 3**, built on this check's path result.
+6. **Azure and GCP:** one verifier each under `internal/providers/`.
