@@ -1,0 +1,46 @@
+[
+  {
+    "message": "Instance i-0web has SSH exposed to 0.0.0.0/0 on public IP address 203.0.113.10 in public subnet subnet-0pub.",
+    "status_code": "FAIL",
+    "status_detail": "Instance i-0web has SSH exposed to 0.0.0.0/0 on public IP address 203.0.113.10 in public subnet subnet-0pub.",
+    "severity": "Critical",
+    "status": "New",
+    "activity_name": "Create",
+    "class_uid": 2004,
+    "class_name": "Detection Finding",
+    "category_uid": 2,
+    "type_uid": 200401,
+    "metadata": {
+      "event_code": "ec2_instance_port_ssh_exposed_to_internet",
+      "product": {
+        "name": "Prowler",
+        "vendor_name": "Prowler",
+        "version": "5.50.0"
+      },
+      "version": "1.5.0"
+    },
+    "finding_info": {
+      "uid": "prowler-aws-ec2_instance_port_ssh_exposed_to_internet-123456789012-eu-west-1-i-0web",
+      "title": "Ensure no EC2 instances allow ingress from the internet to TCP port 22 (SSH)."
+    },
+    "cloud": {
+      "provider": "aws",
+      "region": "eu-west-1",
+      "account": {
+        "uid": "123456789012",
+        "type": "AWS Account"
+      }
+    },
+    "resources": [
+      {
+        "uid": "arn:aws:ec2:eu-west-1:123456789012:instance/i-0web",
+        "name": "i-0web",
+        "region": "eu-west-1",
+        "type": "AwsEc2Instance",
+        "group": {
+          "name": "ec2"
+        }
+      }
+    ]
+  }
+]

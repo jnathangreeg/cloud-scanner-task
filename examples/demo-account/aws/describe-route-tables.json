@@ -1,0 +1,116 @@
+{
+  "RouteTables": [
+    {
+      "RouteTableId": "rtb-0pub",
+      "VpcId": "vpc-0a",
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "RouteTableAssociationId": "rtbassoc-0pub",
+          "RouteTableId": "rtb-0pub",
+          "SubnetId": "subnet-0pub",
+          "Main": false
+        },
+        {
+          "RouteTableAssociationId": "rtbassoc-0locked",
+          "RouteTableId": "rtb-0pub",
+          "SubnetId": "subnet-0locked",
+          "Main": false
+        }
+      ],
+      "Routes": [
+        {
+          "DestinationCidrBlock": "10.0.0.0/16",
+          "GatewayId": "local",
+          "State": "active",
+          "Origin": "CreateRouteTable"
+        },
+        {
+          "DestinationCidrBlock": "0.0.0.0/0",
+          "GatewayId": "igw-0a",
+          "State": "active",
+          "Origin": "CreateRoute"
+        },
+        {
+          "DestinationIpv6CidrBlock": "::/0",
+          "GatewayId": "igw-0a",
+          "State": "active",
+          "Origin": "CreateRoute"
+        }
+      ]
+    },
+    {
+      "RouteTableId": "rtb-0priv",
+      "VpcId": "vpc-0a",
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "RouteTableAssociationId": "rtbassoc-0priv",
+          "RouteTableId": "rtb-0priv",
+          "SubnetId": "subnet-0priv",
+          "Main": false
+        }
+      ],
+      "Routes": [
+        {
+          "DestinationCidrBlock": "10.0.0.0/16",
+          "GatewayId": "local",
+          "State": "active",
+          "Origin": "CreateRouteTable"
+        },
+        {
+          "DestinationCidrBlock": "0.0.0.0/0",
+          "NatGatewayId": "nat-0a",
+          "State": "active",
+          "Origin": "CreateRoute"
+        }
+      ]
+    },
+    {
+      "RouteTableId": "rtb-0amain",
+      "VpcId": "vpc-0a",
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "RouteTableAssociationId": "rtbassoc-0amainm",
+          "RouteTableId": "rtb-0amain",
+          "Main": true
+        }
+      ],
+      "Routes": [
+        {
+          "DestinationCidrBlock": "10.0.0.0/16",
+          "GatewayId": "local",
+          "State": "active",
+          "Origin": "CreateRouteTable"
+        },
+        {
+          "DestinationCidrBlock": "0.0.0.0/0",
+          "GatewayId": "igw-0a",
+          "State": "active",
+          "Origin": "CreateRoute"
+        }
+      ]
+    },
+    {
+      "RouteTableId": "rtb-0bmain",
+      "VpcId": "vpc-0b",
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "RouteTableAssociationId": "rtbassoc-0bmainm",
+          "RouteTableId": "rtb-0bmain",
+          "Main": true
+        }
+      ],
+      "Routes": [
+        {
+          "DestinationCidrBlock": "10.1.0.0/16",
+          "GatewayId": "local",
+          "State": "active",
+          "Origin": "CreateRouteTable"
+        }
+      ]
+    }
+  ]
+}

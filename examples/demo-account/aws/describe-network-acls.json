@@ -1,0 +1,244 @@
+{
+  "NetworkAcls": [
+    {
+      "NetworkAclId": "acl-0a",
+      "VpcId": "vpc-0a",
+      "IsDefault": true,
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "NetworkAclAssociationId": "aclassoc-0pub",
+          "NetworkAclId": "acl-0a",
+          "SubnetId": "subnet-0pub"
+        },
+        {
+          "NetworkAclAssociationId": "aclassoc-0priv",
+          "NetworkAclId": "acl-0a",
+          "SubnetId": "subnet-0priv"
+        }
+      ],
+      "Entries": [
+        {
+          "RuleNumber": 100,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 101,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 32767,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 32768,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 100,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": true,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 101,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": true,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 32767,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": true,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 32768,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": true,
+          "Ipv6CidrBlock": "::/0"
+        }
+      ]
+    },
+    {
+      "NetworkAclId": "acl-0locked",
+      "VpcId": "vpc-0a",
+      "IsDefault": false,
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "NetworkAclAssociationId": "aclassoc-0locked",
+          "NetworkAclId": "acl-0locked",
+          "SubnetId": "subnet-0locked"
+        }
+      ],
+      "Entries": [
+        {
+          "RuleNumber": 90,
+          "RuleAction": "deny",
+          "Protocol": "6",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0",
+          "PortRange": {
+            "From": 22,
+            "To": 22
+          }
+        },
+        {
+          "RuleNumber": 91,
+          "RuleAction": "deny",
+          "Protocol": "6",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0",
+          "PortRange": {
+            "From": 22,
+            "To": 22
+          }
+        },
+        {
+          "RuleNumber": 100,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 101,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 32767,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 32768,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 100,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": true,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 101,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": true,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 32767,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": true,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 32768,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": true,
+          "Ipv6CidrBlock": "::/0"
+        }
+      ]
+    },
+    {
+      "NetworkAclId": "acl-0b",
+      "VpcId": "vpc-0b",
+      "IsDefault": true,
+      "OwnerId": "123456789012",
+      "Associations": [
+        {
+          "NetworkAclAssociationId": "aclassoc-0b",
+          "NetworkAclId": "acl-0b",
+          "SubnetId": "subnet-0b"
+        }
+      ],
+      "Entries": [
+        {
+          "RuleNumber": 100,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 101,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 32767,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": false,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 32768,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": false,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 100,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": true,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 101,
+          "RuleAction": "allow",
+          "Protocol": "-1",
+          "Egress": true,
+          "Ipv6CidrBlock": "::/0"
+        },
+        {
+          "RuleNumber": 32767,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": true,
+          "CidrBlock": "0.0.0.0/0"
+        },
+        {
+          "RuleNumber": 32768,
+          "RuleAction": "deny",
+          "Protocol": "-1",
+          "Egress": true,
+          "Ipv6CidrBlock": "::/0"
+        }
+      ]
+    }
+  ]
+}

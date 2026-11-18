@@ -39,6 +39,8 @@ type Candidate struct {
 	Region     string   `json:"region"`
 	ResourceID string   `json:"resource_id"`
 	Detail     string   `json:"detail"`
+	// Muted is true when the finding was muted in the engine (Prowler's mutelist), i.e. an accepted risk.
+	Muted bool `json:"muted,omitempty"`
 }
 
 // Step is one hop of the evidence path, e.g. "security group sg-1 allows 22 from 0.0.0.0/0".

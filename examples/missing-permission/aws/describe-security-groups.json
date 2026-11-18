@@ -1,0 +1,54 @@
+{
+  "SecurityGroups": [
+    {
+      "GroupId": "sg-0ssh",
+      "GroupName": "ssh-from-anywhere",
+      "VpcId": "vpc-0a",
+      "OwnerId": "123456789012",
+      "IpPermissions": [
+        {
+          "IpProtocol": "tcp",
+          "FromPort": 22,
+          "ToPort": 22,
+          "IpRanges": [
+            {
+              "CidrIp": "0.0.0.0/0"
+            }
+          ],
+          "Ipv6Ranges": [
+            {
+              "CidrIpv6": "::/0"
+            }
+          ],
+          "PrefixListIds": [],
+          "UserIdGroupPairs": []
+        }
+      ]
+    },
+    {
+      "GroupId": "sg-0web",
+      "GroupName": "https",
+      "VpcId": "vpc-0a",
+      "OwnerId": "123456789012",
+      "IpPermissions": [
+        {
+          "IpProtocol": "tcp",
+          "FromPort": 443,
+          "ToPort": 443,
+          "IpRanges": [
+            {
+              "CidrIp": "0.0.0.0/0"
+            }
+          ],
+          "Ipv6Ranges": [
+            {
+              "CidrIpv6": "::/0"
+            }
+          ],
+          "PrefixListIds": [],
+          "UserIdGroupPairs": []
+        }
+      ]
+    }
+  ]
+}
